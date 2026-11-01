@@ -115,6 +115,8 @@ node parse.test.ts   # parser self-check
 npm run lint         # the same lint rules Obsidian's plugin directory checks
 ```
 
+**Releasing:** bump `version` in `manifest.json`, `package.json` and `versions.json`, add `release-notes/<version>.md`, commit, then push a tag with the same version (`git tag 0.1.2 && git push origin 0.1.2`). GitHub Actions builds the plugin, attests the files and publishes the release.
+
 The in-place column editors use Obsidian's internal markdown editor class (the same approach as the Kanban plugin). That API isn't public, so an Obsidian update could break it.
 
 ## License
