@@ -39,6 +39,12 @@ export const colText = (doc: string, c: Col) => doc.slice(c.from, c.to).replace(
 /** Split the inside of a columns code block (reading mode gets the raw text). */
 export const splitColumns = (src: string) => src.split(/^\+\+\+\s*$/m).map((s) => s.trim());
 
-/** Range to delete to remove column i: its text plus one adjacent +++ line. Needs at least 2 columns. */
-export const removeRange = (b: Block, i: number): Col =>
-	i > 0 ? { from: b.cols[i - 1].to, to: b.cols[i].to } : { from: b.cols[0].from, to: b.cols[1].from };
+/** Range to delete to remove column i: its text plus one adjacent +++ line.
+ *  Removing the only column deletes the whole block (and its line break). */
+export const removeRange = (b: Block, i: number, docLength: number): Col =>
+	b.cols.length === 1 ? { from: b.from, to: Math.min(b.to + 1, docLength) }
+	: i > 0 ? { from: b.cols[i - 1].to, to: b.cols[i].to }
+	: { from: b.cols[0].from, to: b.cols[1].from };
+
+/** Markdown for an empty block with `n` columns (each column is one empty line). */
+export const columnsMarkdown = (n: number) => "```columns\n" + Array(n).fill("").join("\n+++\n") + "\n```\n";

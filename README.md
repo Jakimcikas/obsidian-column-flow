@@ -16,9 +16,10 @@ Right column
 
 `+++` on its own line separates the columns. Without the plugin installed, this is still a plain code block, so your notes stay readable.
 
+- **Insert:** Cmd/Ctrl+P → *Column Flow: Insert columns*, then pick or type the number of columns.
 - **Edit:** click a column, or move into it with the arrow keys.
 - **Navigate:** ←/→ at the start or end of a column jumps to the neighbouring column, and ↑/↓ at the top or bottom leaves the block. Esc closes the editor.
-- **Add or remove columns:** hover over the block for **+ column**, or over a column for **×**.
+- **Add or remove columns:** hover over the block for **+ column**, or over a column for **×**. Cmd/Ctrl+Backspace in an empty column removes it too. Removing the last column deletes the whole block.
 - **Raw markdown:** the **</>** button shows the block's source.
 
 ## Styling
@@ -39,6 +40,7 @@ Columns are borderless by default. To add borders:
 ```bash
 npm run dev          # rebuild on change
 node parse.test.ts   # parser self-check
+npm run lint         # the same lint rules Obsidian's plugin directory checks
 ```
 
 The in-place column editors use Obsidian's internal markdown editor class (the same approach as the Kanban plugin). That API isn't public, so an Obsidian update could break it.

@@ -1,14 +1,17 @@
-import { App, Component, editorInfoField, Keymap, MarkdownRenderer, Plugin, PluginSettingTab, Scope, Setting } from "obsidian";
-import { Annotation, EditorState, Prec, RangeSetBuilder, StateField, Transaction } from "@codemirror/state";
-import { Decoration, DecorationSet, EditorView, keymap, WidgetType } from "@codemirror/view";
-import { Block, colText, parseBlocks, removeRange, splitColumns } from "./parse";
+import {
+	App, Component, Editor, editorInfoField, HoverPopover, Keymap, MarkdownFileInfo, MarkdownRenderChild,
+	MarkdownRenderer, Plugin, PluginSettingTab, Scope, SettingDefinitionItem, SuggestModal, TFile,
+} from "obsidian";
+import { Annotation, EditorState, Extension, Prec, RangeSetBuilder, StateField, Transaction } from "@codemirror/state";
+import { Decoration, DecorationSet, EditorView, keymap, ViewUpdate, WidgetType } from "@codemirror/view";
+import { Block, colText, columnsMarkdown, parseBlocks, removeRange, splitColumns } from "./parse";
 
 // Tags transactions written by a column editor: the field maps instead of rebuilding, so the column keeps focus.
 const fromColumn = Annotation.define<boolean>();
 
 // ---------- Arrow-key navigation ----------
 
-type Dir = "up" | "down" | "left" | "right";
+type Dir = "up" | "down" | "left" | "right" | "backspace";
 type Nav = (dir: Dir, v: EditorView) => boolean;
 const arrows = (run: Nav) => Prec.highest(keymap.of((["up", "down", "left", "right"] as Dir[]).map((dir) => ({
 	key: "Arrow" + dir[0].toUpperCase() + dir.slice(1),
@@ -18,11 +21,26 @@ const arrows = (run: Nav) => Prec.highest(keymap.of((["up", "down", "left", "rig
 /** True when the cursor can't move further in `dir` inside this editor (respects wrapped lines). */
 function atEdge(v: EditorView, dir: Dir): boolean {
 	const s = v.state.selection.main;
+	if (dir === "backspace") return v.state.doc.length === 0; // empty column
 	if (!s.empty) return false;
 	if (dir === "left") return s.head === 0;
 	if (dir === "right") return s.head === v.state.doc.length;
 	const m = v.moveVertically(s, dir === "down");
 	return m.head === s.head || v.coordsAtPos(m.head)?.top === v.coordsAtPos(s.head)?.top;
+}
+
+/** Opens column `i` of a rendered widget; keyed by the widget's root element. */
+type Enter = (i: number, atEnd: boolean) => void;
+const enterFns = new WeakMap<HTMLElement, Enter>();
+
+/** Open a column of the block starting at `from`. False if the block is shown as raw markdown. */
+function enterBlock(view: EditorView, from: number, i: number, atEnd: boolean): boolean {
+	const root = Array.from(view.contentDOM.querySelectorAll<HTMLElement>(".cf-columns-wrap"))
+		.find((el) => view.posAtDOM(el) === from);
+	const enter = root && enterFns.get(root);
+	if (!enter) return false;
+	enter(i, atEnd);
+	return true;
 }
 
 /** Outer note editor: arrowing into a columns block opens a column instead of skipping it. */
@@ -31,82 +49,106 @@ const enterColumns = arrows((dir, view) => {
 	if (!s.empty) return false;
 	const h = s.head;
 	for (const b of parseBlocks(view.state.doc.toString())) {
-		let target: [number, boolean] | null = null; // [column, cursor at end]
-		if (dir === "down" && h < b.from && view.moveVertically(s, true).head >= b.from) target = [0, false];
-		else if (dir === "up" && h > b.to && view.moveVertically(s, false).head <= b.to) target = [0, true];
-		else if (dir === "right" && h === b.from - 1) target = [0, false];
-		else if (dir === "left" && h === b.to + 1) target = [b.cols.length - 1, true];
-		if (!target) continue;
-		const root = Array.from(view.contentDOM.querySelectorAll<HTMLElement>(".cf-columns-wrap"))
-			.find((el) => view.posAtDOM(el) === b.from) as Any;
-		if (!root?.lcEnter) return false; // block shown as raw markdown: normal cursor movement
-		root.lcEnter(...target);
-		return true;
+		if (dir === "down" && h < b.from && view.moveVertically(s, true).head >= b.from) return enterBlock(view, b.from, 0, false);
+		if (dir === "up" && h > b.to && view.moveVertically(s, false).head <= b.to) return enterBlock(view, b.from, 0, true);
+		if (dir === "right" && h === b.from - 1) return enterBlock(view, b.from, 0, false);
+		if (dir === "left" && h === b.to + 1) return enterBlock(view, b.from, b.cols.length - 1, true);
 	}
 	return false;
 });
 
-// ---------- Embedded markdown editor (private Obsidian API, same trick as the Kanban plugin) ----------
+// ---------- Embedded markdown editor ----------
+// Obsidian's MarkdownEditor class isn't public. We reach it through a throwaway markdown embed (the same
+// approach as the Kanban plugin) and describe only the members we use with these minimal types.
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Any = any;
-let EditorClass: Any = null;
+interface EditorOwner extends MarkdownFileInfo {
+	editMode?: InternalEditor;
+	onMarkdownScroll(): void;
+	getMode(): "source";
+}
+interface InternalEditor {
+	owner: EditorOwner;
+	editor: Editor & { cm: EditorView };
+	_loaded: boolean;
+	set(value: string, clear: boolean): void;
+	onUpdate(update: ViewUpdate, changed: boolean): void;
+	buildLocalExtensions(): Extension[];
+	unload(): void;
+	destroy(): void;
+}
+type InternalEditorCtor = new (app: App, el: HTMLElement, owner: EditorOwner) => InternalEditor;
+interface MarkdownEmbed { editable: boolean; editMode: object; load(): void; unload(): void; showEditor(): void }
+interface EmbedRegistry {
+	embedByExtension: { md(ctx: { app: App; containerEl: HTMLElement; state: object }, file: null, subpath: string): MarkdownEmbed };
+}
 
-function getEditorClass(app: App): Any {
-	if (EditorClass) return EditorClass;
-	const embed = (app as Any).embedRegistry.embedByExtension.md({ app, containerEl: createDiv(), state: {} }, null, "");
+type ColumnEditorCtor = new (
+	app: App, el: HTMLElement, file: TFile | null, value: string, onChange: (v: string) => void, onNav: Nav,
+) => InternalEditor;
+let ColumnEditor: ColumnEditorCtor | null = null;
+
+function getColumnEditor(app: App): ColumnEditorCtor {
+	if (ColumnEditor) return ColumnEditor;
+	const registry = (app as App & { embedRegistry: EmbedRegistry }).embedRegistry;
+	const embed = registry.embedByExtension.md({ app, containerEl: createDiv(), state: {} }, null, "");
 	embed.load();
 	embed.editable = true;
 	embed.showEditor();
-	const Base = Object.getPrototypeOf(Object.getPrototypeOf(embed.editMode)).constructor;
+	const proto = Object.getPrototypeOf(Object.getPrototypeOf(embed.editMode) as object) as { constructor: InternalEditorCtor };
+	const Base = proto.constructor;
 	embed.unload();
 
-	EditorClass = class extends Base {
+	ColumnEditor = class extends Base {
 		onChange: (v: string) => void;
-		onNav: Nav;
+		onNav: Nav | undefined;
 		scope: Scope;
-		constructor(app: App, el: HTMLElement, value: string, onChange: (v: string) => void, onNav: Nav) {
-			super(app, el, { app, onMarkdownScroll: () => {}, getMode: () => "source" });
+		constructor(app: App, el: HTMLElement, file: TFile | null, value: string, onChange: (v: string) => void, onNav: Nav) {
+			super(app, el, { app, file, hoverPopover: null as HoverPopover | null, onMarkdownScroll: () => {}, getMode: () => "source" });
 			this.onChange = onChange;
 			this.onNav = onNav;
-			this.scope = new Scope((app as Any).scope);
+			this.scope = new Scope(app.scope);
 			this.owner.editMode = this;
 			this.owner.editor = this.editor;
 			this.set(value, false);
 			// Route Obsidian commands/hotkeys (Cmd+B etc.) to this editor while it has focus.
-			const cm: EditorView = this.editor.cm;
-			let prev: Any = null;
+			const cm = this.editor.cm;
+			let prev: MarkdownFileInfo | null = null;
 			cm.contentDOM.addEventListener("focusin", () => {
-				(app as Any).keymap.pushScope(this.scope);
+				app.keymap.pushScope(this.scope);
 				prev = app.workspace.activeEditor;
-				(app.workspace as Any).activeEditor = this.owner;
+				app.workspace.activeEditor = this.owner;
 			});
 			cm.contentDOM.addEventListener("blur", () => {
-				(app as Any).keymap.popScope(this.scope);
-				if (app.workspace.activeEditor === this.owner) (app.workspace as Any).activeEditor = prev;
+				app.keymap.popScope(this.scope);
+				if (app.workspace.activeEditor === this.owner) app.workspace.activeEditor = prev;
 			});
 		}
-		onUpdate(update: Any, changed: boolean) {
+		onUpdate(update: ViewUpdate, changed: boolean) {
 			super.onUpdate(update, changed);
 			if (changed) this.onChange(this.editor.cm.state.doc.toString());
 		}
 		buildLocalExtensions() {
-			// runs inside super(), before onNav is assigned, so look it up at key time
-			return [...super.buildLocalExtensions(), arrows((dir, v) => this.onNav?.(dir, v) ?? false)];
+			// Runs inside super(), before onNav is assigned, so look it up at key time.
+			const nav = (dir: Dir) => (v: EditorView) => this.onNav?.(dir, v) ?? false;
+			return [
+				...super.buildLocalExtensions(),
+				arrows((dir, v) => nav(dir)(v)),
+				Prec.highest(keymap.of([{ key: "Mod-Backspace", run: nav("backspace") }])),
+			];
 		}
 		destroy() {
 			if (this._loaded) this.unload();
 			super.destroy();
 		}
 	};
-	return EditorClass;
+	return ColumnEditor;
 }
 
 // ---------- Live Preview widget ----------
 
 class ColumnsWidget extends WidgetType {
-	editors: Any[] = [];
-	renderer = new Component(); // owns rendered-markdown children (embeds etc.)
+	editors: InternalEditor[] = [];
+	renderer = new Component(); // owns rendered-markdown children (embeds etc.); unloaded with the widget
 	constructor(readonly app: App, readonly source: string, readonly cols: string[]) { super(); }
 
 	eq(other: ColumnsWidget) { return other.source === this.source; }
@@ -114,11 +156,12 @@ class ColumnsWidget extends WidgetType {
 	toDOM(view: EditorView) {
 		const root = createDiv({ cls: "cf-columns-wrap" });
 		const grid = root.createDiv({ cls: "cf-columns" });
-		const sourcePath = view.state.field(editorInfoField)?.file?.path ?? "";
+		const file = view.state.field(editorInfoField)?.file ?? null;
+		const sourcePath = file?.path ?? "";
 		this.renderer.load();
 		const n = this.cols.length;
 		const enters: ((atEnd: boolean) => void)[] = [];
-		(root as Any).lcEnter = (i: number, atEnd: boolean) => enters[i]?.(atEnd);
+		enterFns.set(root, (i, atEnd) => enters[i]?.(atEnd));
 		// Leave the block to the line before/after it (creating one at the start/end of the note).
 		const exit = (after: boolean) => {
 			const b = blockAt(view, root);
@@ -131,27 +174,40 @@ class ColumnsWidget extends WidgetType {
 				: { changes: { from: 0, insert: "\n" }, selection: { anchor: 0 } });
 			view.focus();
 		};
-		this.cols.forEach((text, i) => {
+		this.cols.forEach((initial, i) => {
+			let text = initial;
 			const col = grid.createDiv({ cls: "cf-column" });
 			const cell = col.createDiv({ cls: "cf-column-body" }); // emptied on show/edit; the × button lives outside it
-			let editor: Any = null;
-			if (this.cols.length > 1) {
-				const x = col.createEl("button", { cls: "cf-remove", text: "×", attr: { "aria-label": "Remove column" } });
-				x.onclick = (e) => {
-					e.stopPropagation();
-					const b = blockAt(view, root);
-					if (b && b.cols.length > 1) view.dispatch({ changes: removeRange(b, i) });
-				};
-			}
+			let editor: InternalEditor | null = null;
+			const x = col.createEl("button", {
+				cls: "cf-remove", text: "×", attr: { "aria-label": n > 1 ? "Remove column" : "Remove columns block" },
+			});
+			x.onclick = (e) => {
+				e.stopPropagation();
+				const b = blockAt(view, root);
+				if (b) view.dispatch({ changes: removeRange(b, i, view.state.doc.length) });
+			};
 			const show = () => {
 				cell.empty();
 				cell.removeClass("is-editing");
 				if (!text.trim()) cell.createDiv({ cls: "cf-placeholder", text: "Click to write…" });
-				else MarkdownRenderer.render(this.app, text, cell, sourcePath, this.renderer);
+				else void MarkdownRenderer.render(this.app, text, cell, sourcePath, this.renderer);
+			};
+			// Cmd/Ctrl+Backspace in an empty column: remove it and move to the previous column
+			// (or, if it was the only one, delete the block and go to the end of the line above).
+			const removeEmpty = () => {
+				const b = blockAt(view, root);
+				if (!b) return;
+				view.dispatch({ changes: removeRange(b, i, view.state.doc.length) });
+				if (b.cols.length > 1) { enterBlock(view, b.from, Math.max(i - 1, 0), i > 0); return; }
+				view.dispatch({ selection: { anchor: Math.max(b.from - 1, 0) } });
+				view.focus();
 			};
 			const nav: Nav = (dir, v) => {
 				if (!atEdge(v, dir)) return false;
-				if (dir === "left" && i > 0) enters[i - 1](true);
+				// Deferred: removing the column destroys this editor, so don't do it inside its own key handler.
+				if (dir === "backspace") window.setTimeout(removeEmpty);
+				else if (dir === "left" && i > 0) enters[i - 1](true);
 				else if (dir === "right" && i < n - 1) enters[i + 1](false);
 				else exit(dir === "down" || dir === "right");
 				return true;
@@ -160,13 +216,14 @@ class ColumnsWidget extends WidgetType {
 				if (!editor) {
 					cell.empty();
 					cell.addClass("is-editing");
-					editor = new (getEditorClass(this.app))(this.app, cell, text, (v: string) => {
+					const Editor = getColumnEditor(this.app);
+					editor = new Editor(this.app, cell, file, text, (v) => {
 						text = v;
 						writeBack(view, root, i, v);
 					}, nav);
 					this.editors.push(editor);
 				}
-				const cm: EditorView = editor.editor.cm;
+				const cm = editor.editor.cm;
 				cm.dispatch({ selection: { anchor: atEnd ? cm.state.doc.length : 0 } });
 				cm.focus();
 			};
@@ -183,12 +240,13 @@ class ColumnsWidget extends WidgetType {
 				const a = (e.target as HTMLElement).closest("a");
 				if (a?.hasClass("internal-link")) {
 					e.preventDefault();
-					this.app.workspace.openLinkText(a.getAttr("data-href") ?? a.getText(), sourcePath, Keymap.isModEvent(e));
+					void this.app.workspace.openLinkText(a.getAttr("data-href") ?? a.getText(), sourcePath, Keymap.isModEvent(e));
 				} else if (!a) edit(); // external links open normally
 			});
-			// Close when focus leaves the card (deferred: link/autocomplete popups briefly move focus)
-			cell.addEventListener("focusout", () => setTimeout(() => {
-				if (!cell.contains(document.activeElement)) close();
+			// Close when focus leaves the card (deferred: link/autocomplete popups briefly move focus).
+			// cell.doc / cell.win keep this working in popout windows.
+			cell.addEventListener("focusout", () => cell.win.setTimeout(() => {
+				if (!cell.contains(cell.doc.activeElement)) close();
 			}));
 			cell.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
 			show();
@@ -198,7 +256,7 @@ class ColumnsWidget extends WidgetType {
 			const b = blockAt(view, root);
 			if (b) view.dispatch({ changes: { from: b.cols[b.cols.length - 1].to, insert: "+++\n\n" } }); // before closing ```
 		};
-		bar.createEl("button", { text: "</>", attr: { "aria-label": "Edit raw markdown" } }).onclick = () => {
+		bar.createEl("button", { text: "</>", attr: { "aria-label": "Edit raw Markdown" } }).onclick = () => {
 			const b = blockAt(view, root);
 			if (b) { view.dispatch({ selection: { anchor: b.from } }); view.focus(); }
 		};
@@ -245,26 +303,36 @@ const columnsField = (app: App) => StateField.define<DecorationSet>({
 
 // ---------- Plugin ----------
 
+interface Settings { bordered: boolean }
+
 export default class ColumnFlow extends Plugin {
-	settings = { bordered: false };
+	settings: Settings = { bordered: false };
 
 	applyStyle() { document.body.toggleClass("cf-bordered", this.settings.bordered); }
 
 	async onload() {
-		Object.assign(this.settings, await this.loadData());
+		Object.assign(this.settings, (await this.loadData()) as Partial<Settings> | null);
 		this.applyStyle();
 		this.addSettingTab(new ColumnFlowSettings(this));
 		this.registerEditorExtension([columnsField(this.app), enterColumns]);
+		this.addCommand({
+			id: "insert-columns",
+			name: "Insert columns",
+			icon: "columns-3",
+			editorCallback: (editor) => new ColumnCountModal(this.app, (n) => insertColumns(editor, n)).open(),
+		});
 
 		// Reading mode. A post-processor (not a code-block processor) so Obsidian's own Live Preview
 		// code-block widget doesn't compete with the editor extension above.
 		this.registerMarkdownPostProcessor((el, ctx) => {
 			el.querySelectorAll("pre > code.language-columns").forEach((code) => {
 				const grid = createDiv({ cls: "cf-columns" });
+				const child = new MarkdownRenderChild(grid); // unloaded with this rendered section
+				ctx.addChild(child);
 				for (const md of splitColumns(code.textContent ?? "")) {
-					MarkdownRenderer.render(this.app, md, grid.createDiv({ cls: "cf-column" }), ctx.sourcePath, this);
+					void MarkdownRenderer.render(this.app, md, grid.createDiv({ cls: "cf-column" }), ctx.sourcePath, child);
 				}
-				code.parentElement!.replaceWith(grid);
+				code.parentElement?.replaceWith(grid);
 			});
 		});
 	}
@@ -272,18 +340,45 @@ export default class ColumnFlow extends Plugin {
 	onunload() { document.body.removeClass("cf-bordered"); }
 }
 
+/** Insert an empty block at the cursor (on its own line) and start editing the first column. */
+function insertColumns(editor: Editor, n: number) {
+	const view = (editor as Editor & { cm: EditorView }).cm;
+	const { from, to } = view.state.selection.main;
+	const line = view.state.doc.lineAt(from);
+	const pre = from === line.from ? "" : "\n"; // mid-line: start the block on a new line
+	const at = from + pre.length;
+	view.dispatch({ changes: { from, to, insert: pre + columnsMarkdown(n) }, selection: { anchor: at + columnsMarkdown(n).length } });
+	window.setTimeout(() => enterBlock(view, at, 0, false)); // after the modal hands focus back to the note
+}
+
+class ColumnCountModal extends SuggestModal<number> {
+	constructor(app: App, readonly onPick: (n: number) => void) {
+		super(app);
+		this.setPlaceholder("Number of columns (1–12)");
+	}
+	getSuggestions(query: string) {
+		const n = parseInt(query, 10);
+		return n >= 1 && n <= 12 ? [n] : [2, 3, 4, 5, 6];
+	}
+	renderSuggestion(n: number, el: HTMLElement) { el.setText(`${n} column${n === 1 ? "" : "s"}`); }
+	onChooseSuggestion(n: number) { this.onPick(n); }
+}
+
+// Declarative settings (Obsidian 1.13+): rendered by Obsidian and included in settings search.
 class ColumnFlowSettings extends PluginSettingTab {
 	constructor(readonly plugin: ColumnFlow) { super(plugin.app, plugin); }
 
-	display() {
-		this.containerEl.empty();
-		new Setting(this.containerEl)
-			.setName("Bordered columns")
-			.setDesc("Draw a border around every column. For a single note, add `cssclasses: cf-bordered` to its frontmatter instead.")
-			.addToggle((t) => t.setValue(this.plugin.settings.bordered).onChange(async (v) => {
-				this.plugin.settings.bordered = v;
-				this.plugin.applyStyle();
-				await this.plugin.saveData(this.plugin.settings);
-			}));
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		return [{
+			name: "Bordered columns",
+			desc: "Draw a border around every column. For a single note, add `cssclasses: cf-bordered` to its frontmatter instead.",
+			aliases: ["border", "columns"],
+			control: { type: "toggle", key: "bordered", defaultValue: false },
+		}];
+	}
+
+	async setControlValue(key: string, value: unknown) {
+		await super.setControlValue(key, value); // updates plugin.settings and saves
+		this.plugin.applyStyle();
 	}
 }
