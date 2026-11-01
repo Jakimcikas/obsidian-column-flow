@@ -1,0 +1,58 @@
+.cf-columns {
+	display: grid;
+	grid-auto-flow: column;
+	grid-auto-columns: minmax(0, 1fr);
+	gap: 1rem;
+	margin: 0.5rem 0;
+}
+
+.cf-column {
+	border-radius: var(--radius-m);
+	padding: 0.25rem 0.75rem;
+	min-height: 2.5rem;
+}
+
+.cf-column .cm-editor { min-height: 2rem; }
+
+.cf-toolbar {
+	display: flex;
+	justify-content: flex-end;
+	gap: 0.25rem;
+	opacity: 0;
+	transition: opacity 0.15s;
+}
+
+.cf-columns-wrap:hover .cf-toolbar,
+.cf-columns-wrap:focus-within .cf-toolbar { opacity: 1; }
+
+.cf-toolbar button { font-size: var(--font-ui-smaller); padding: 0 0.5rem; height: auto; }
+
+@media (max-width: 600px) {
+	.cf-columns { grid-auto-flow: row; }
+}
+
+/* Card look: rendered by default, editor on click */
+.cf-column { cursor: text; transition: background-color 0.15s; }
+/* Borderless: only a faint tint on hover/edit so you can still find the column edges */
+.cf-column:hover,
+.cf-column.is-editing { background: var(--background-modifier-hover); }
+.cf-column-body > :first-child { margin-top: 0.25rem; }
+.cf-column-body > :last-child { margin-bottom: 0.25rem; }
+.cf-placeholder { color: var(--text-faint); font-style: italic; padding: 0.4rem 0; }
+
+/* Bordered style: plugin setting (body class) or per note via `cssclasses: cf-bordered` */
+.cf-bordered .cf-column { border: 1px solid var(--background-modifier-border); }
+.cf-bordered .cf-column:hover,
+.cf-bordered .cf-column.is-editing { border-color: var(--interactive-accent); }
+
+/* Remove-column button, shown on hover */
+.cf-column { position: relative; }
+.cf-remove {
+	position: absolute; top: 0.25rem; right: 0.25rem;
+	padding: 0 0.4rem; height: auto; line-height: 1.4;
+	font-size: var(--font-ui-small); color: var(--text-muted);
+	background: transparent; box-shadow: none;
+	opacity: 0; transition: opacity 0.15s;
+}
+.cf-column:hover .cf-remove { opacity: 1; }
+.cf-remove:hover { color: var(--text-error); }

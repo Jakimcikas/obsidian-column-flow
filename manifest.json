@@ -1,0 +1,9 @@
+{
+	"id": "column-flow",
+	"name": "Column Flow",
+	"version": "0.1.0",
+	"minAppVersion": "1.4.0",
+	"description": "Side-by-side columns you can edit directly in Live Preview.",
+	"author": "Martynas Jakimčikas",
+	"isDesktopOnly": false
+}
