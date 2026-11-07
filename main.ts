@@ -118,11 +118,15 @@ function getColumnEditor(app: App): ColumnEditorCtor {
 				prev = app.workspace.activeEditor;
 				app.workspace.activeEditor = this.owner;
 			});
-			cm.contentDOM.addEventListener("blur", () => {
+			// Also run from destroy(): removing a focused editor from the DOM doesn't fire blur,
+			// which left activeEditor pointing at a dead editor (commands then did nothing).
+			this.release = () => {
 				app.keymap.popScope(this.scope);
 				if (app.workspace.activeEditor === this.owner) app.workspace.activeEditor = prev;
-			});
+			};
+			cm.contentDOM.addEventListener("blur", this.release);
 		}
+		release = () => {};
 		onUpdate(update: ViewUpdate, changed: boolean) {
 			super.onUpdate(update, changed);
 			if (changed) this.onChange(this.editor.cm.state.doc.toString());
@@ -137,6 +141,7 @@ function getColumnEditor(app: App): ColumnEditorCtor {
 			];
 		}
 		destroy() {
+			this.release();
 			if (this._loaded) this.unload();
 			super.destroy();
 		}

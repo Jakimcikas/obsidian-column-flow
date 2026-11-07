@@ -4,6 +4,8 @@ Side-by-side columns in Obsidian that you can **edit directly in Live Preview**,
 
 Each column is shown as a rendered card. Click one (or arrow into it) and it turns into a real Obsidian editor, with formatting, links, autocomplete and hotkeys. Click away and it goes back to the rendered card.
 
+![Inserting and editing columns in Live Preview](https://raw.githubusercontent.com/Jakimcikas/obsidian-column-flow/main/pub/demo.gif)
+
 ## Inserting columns
 
 The quickest way is the command palette:
