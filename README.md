@@ -99,7 +99,9 @@ Column Flow is JavaScript that runs inside Obsidian, like any other plugin. It d
 
 ## Install
 
-**From GitHub (before it's in the community list):**
+**From Obsidian:** Settings → Community plugins → Browse, search for **Column Flow**, then install and enable it.
+
+**From GitHub:**
 1. Download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/Jakimcikas/obsidian-column-flow/releases/latest).
 2. Put them in `<vault>/.obsidian/plugins/column-flow/`.
 3. Enable **Column Flow** in Settings → Community plugins.

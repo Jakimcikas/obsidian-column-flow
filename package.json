@@ -1,6 +1,6 @@
 {
 	"name": "column-flow",
-	"version": "0.1.3",
+	"version": "0.1.4",
 	"description": "Editable side-by-side columns in Obsidian Live Preview",
 	"main": "main.js",
 	"scripts": {
