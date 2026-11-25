@@ -1,5 +1,5 @@
 import {
-	App, Component, Editor, editorInfoField, HoverPopover, Keymap, MarkdownFileInfo, MarkdownRenderChild,
+	App, Editor, editorInfoField, HoverPopover, MarkdownFileInfo, MarkdownRenderChild,
 	MarkdownRenderer, Plugin, PluginSettingTab, Scope, SettingDefinitionItem, SuggestModal, TFile,
 } from "obsidian";
 import { Annotation, EditorState, Extension, Prec, RangeSetBuilder, StateField, Transaction } from "@codemirror/state";
@@ -153,7 +153,6 @@ function getColumnEditor(app: App): ColumnEditorCtor {
 
 class ColumnsWidget extends WidgetType {
 	editors: InternalEditor[] = [];
-	renderer = new Component(); // owns rendered-markdown children (embeds etc.); unloaded with the widget
 	constructor(readonly app: App, readonly source: string, readonly cols: string[]) { super(); }
 
 	eq(other: ColumnsWidget) { return other.source === this.source; }
@@ -162,8 +161,6 @@ class ColumnsWidget extends WidgetType {
 		const root = createDiv({ cls: "cf-columns-wrap" });
 		const grid = root.createDiv({ cls: "cf-columns" });
 		const file = view.state.field(editorInfoField)?.file ?? null;
-		const sourcePath = file?.path ?? "";
-		this.renderer.load();
 		const n = this.cols.length;
 		const enters: ((atEnd: boolean) => void)[] = [];
 		enterFns.set(root, (i, atEnd) => enters[i]?.(atEnd));
@@ -180,10 +177,8 @@ class ColumnsWidget extends WidgetType {
 			view.focus();
 		};
 		this.cols.forEach((initial, i) => {
-			let text = initial;
 			const col = grid.createDiv({ cls: "cf-column" });
-			const cell = col.createDiv({ cls: "cf-column-body" }); // emptied on show/edit; the × button lives outside it
-			let editor: InternalEditor | null = null;
+			const cell = col.createDiv({ cls: "cf-column-body" }); // holds the editor; the × button lives outside it
 			const x = col.createEl("button", {
 				cls: "cf-remove", text: "×", attr: { "aria-label": n > 1 ? "Remove column" : "Remove columns block" },
 			});
@@ -191,12 +186,6 @@ class ColumnsWidget extends WidgetType {
 				e.stopPropagation();
 				const b = blockAt(view, root);
 				if (b) view.dispatch({ changes: removeRange(b, i, view.state.doc.length) });
-			};
-			const show = () => {
-				cell.empty();
-				cell.removeClass("is-editing");
-				if (!text.trim()) cell.createDiv({ cls: "cf-placeholder", text: "Click to write…" });
-				else void MarkdownRenderer.render(this.app, text, cell, sourcePath, this.renderer);
 			};
 			// Cmd/Ctrl+Backspace in an empty column: remove it and move to the previous column
 			// (or, if it was the only one, delete the block and go to the end of the line above).
@@ -217,44 +206,20 @@ class ColumnsWidget extends WidgetType {
 				else exit(dir === "down" || dir === "right");
 				return true;
 			};
+			// Always a live editor (not rendered HTML), so Live Preview themes/CSS snippets apply when not focused too.
+			// ponytail: one CodeMirror per column, always mounted; mount on viewport entry if many-block notes lag
+			const editor = new (getColumnEditor(this.app))(this.app, cell, file, initial, (v) => writeBack(view, root, i, v), nav);
+			this.editors.push(editor);
 			const edit = (atEnd = true) => {
-				if (!editor) {
-					cell.empty();
-					cell.addClass("is-editing");
-					const Editor = getColumnEditor(this.app);
-					editor = new Editor(this.app, cell, file, text, (v) => {
-						text = v;
-						writeBack(view, root, i, v);
-					}, nav);
-					this.editors.push(editor);
-				}
 				const cm = editor.editor.cm;
 				cm.dispatch({ selection: { anchor: atEnd ? cm.state.doc.length : 0 } });
 				cm.focus();
 			};
 			enters.push(edit);
-			const close = () => {
-				if (!editor) return;
-				this.editors.remove(editor);
-				editor.destroy();
-				editor = null;
-				show();
-			};
-			cell.addEventListener("click", (e) => {
-				if (editor) return;
-				const a = (e.target as HTMLElement).closest("a");
-				if (a?.hasClass("internal-link")) {
-					e.preventDefault();
-					void this.app.workspace.openLinkText(a.getAttr("data-href") ?? a.getText(), sourcePath, Keymap.isModEvent(e));
-				} else if (!a) edit(); // external links open normally
+			// Clicks on the card's padding (outside the editor) still focus it.
+			col.addEventListener("click", (e) => {
+				if (!(e.target as HTMLElement).closest(".cm-editor, .cf-remove")) edit();
 			});
-			// Close when focus leaves the card (deferred: link/autocomplete popups briefly move focus).
-			// cell.doc / cell.win keep this working in popout windows.
-			cell.addEventListener("focusout", () => cell.win.setTimeout(() => {
-				if (!cell.contains(cell.doc.activeElement)) close();
-			}));
-			cell.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
-			show();
 		});
 		const bar = root.createDiv({ cls: "cf-toolbar" });
 		bar.createEl("button", { text: "+ column" }).onclick = () => {
@@ -268,7 +233,7 @@ class ColumnsWidget extends WidgetType {
 		return root;
 	}
 
-	destroy() { this.editors.forEach((e) => e.destroy()); this.renderer.unload(); }
+	destroy() { this.editors.forEach((e) => e.destroy()); }
 	ignoreEvent() { return true; }
 }
 

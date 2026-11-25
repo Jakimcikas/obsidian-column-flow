@@ -1,0 +1,2 @@
+/* Stand-in for a user's Live Preview heading snippet (issue #3) */
+.markdown-source-view .HyperMD-header-1 { color: rgb(255, 128, 0) !important; }

@@ -35,17 +35,12 @@
 .cf-column { cursor: text; transition: background-color 0.15s; }
 /* Borderless: only a faint tint on hover/edit so you can still find the column edges */
 .cf-column:hover,
-.cf-column.is-editing { background: var(--background-modifier-hover); }
-/* Live Preview widgets inherit .cm-content's pre-wrap, which turns the renderer's "\n" text nodes into blank lines */
-.cf-column-body { white-space: normal; }
-.cf-column-body > :first-child { margin-top: 0.25rem; }
-.cf-column-body > :last-child { margin-bottom: 0.25rem; }
-.cf-placeholder { color: var(--text-faint); font-style: italic; padding: 0.4rem 0; }
+.cf-column:focus-within { background: var(--background-modifier-hover); }
 
 /* Bordered style: plugin setting (body class) or per note via `cssclasses: cf-bordered` */
 .cf-bordered .cf-column { border: 1px solid var(--background-modifier-border); }
 .cf-bordered .cf-column:hover,
-.cf-bordered .cf-column.is-editing { border-color: var(--interactive-accent); }
+.cf-bordered .cf-column:focus-within { border-color: var(--interactive-accent); }
 
 /* Remove-column button, shown on hover */
 .cf-column { position: relative; }
